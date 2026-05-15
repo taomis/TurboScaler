@@ -1,0 +1,6 @@
+turbostretch
+
+*.o
+*.dSYM/
+
+.DS_Store
