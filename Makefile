@@ -1,6 +1,8 @@
 CC      = clang
 PREFIX	= /opt/homebrew
-CFLAGS  = -Wall -Wextra -Wpedantic
+CFLAGS  = -Wall -Wextra -Wpedantic \
+           -I$(PREFIX)/opt/jpeg-turbo/include
+LDFLAGS = -L$(PREFIX)/opt/jpeg-turbo/lib -lturbojpeg -lm
 BIN     = turbostretch
 
 .PHONY: all clean
@@ -8,7 +10,7 @@ BIN     = turbostretch
 all: $(BIN)
 
 $(BIN): $(BIN).c
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
 	rm -f $(BIN)
