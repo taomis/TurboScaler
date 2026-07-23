@@ -5,18 +5,22 @@
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
+#include <math.h>
 #include <limits.h>
 
 #include <turbojpeg.h>
 
-#define JPEG_QUALITY 90
+#define LAMBDA          ((16.0 / 4.0) / (9.0 / 3.0))
+#define TARGET_ASPECT   (16.0 / 9.0)
+#define JPEG_QUALITY    90
 
 
 typedef struct {
     size_t jpeg_size;
     uint8_t *jpeg_buffer;
-    uint8_t *rgb;
-    int h, w;
+    uint8_t *rgb_src;
+    uint8_t *rgb_dst;
+    int h, w, dst_w;
 } img_t;
 
 
@@ -27,8 +31,10 @@ static void clean(img_t **frame_ptr, tjhandle *handler, uint8_t *out_jpeg) {
     }
 
     if (frame_ptr && *frame_ptr) {
-        if ((*frame_ptr)->rgb)
-            tj3Free((*frame_ptr)->rgb);
+        if ((*frame_ptr)->rgb_src)
+            tj3Free((*frame_ptr)->rgb_src);
+        if ((*frame_ptr)->rgb_dst)
+            tj3Free((*frame_ptr)->rgb_dst);
         if ((*frame_ptr)->jpeg_buffer)
             free((*frame_ptr)->jpeg_buffer);
         free(*frame_ptr);
@@ -46,13 +52,28 @@ static const char *err_str(tjhandle h) {
 }
 
 
+/* Nearest-neighbor horizontal resample (src_w x h) -> (dst_w x h) */
+static void resample(const uint8_t *src, uint8_t *dst, int src_w, int dst_w, int h) {
+    for (int y = 0; y < h; ++y) {
+        const uint8_t *s_row = src + (size_t) y * src_w * 3;
+        uint8_t *d_row = dst + (size_t) y * dst_w * 3;
+        for (int x = 0; x < dst_w; ++x) {
+            int sx = (int) (((double) x + 0.5) * (double) src_w / (double) dst_w);
+            if (sx >= src_w)
+                sx = src_w - 1;
+            memcpy(d_row + (size_t) x * 3, s_row + (size_t) sx * 3, 3);
+        }
+    }
+}
+
+
 static int build_output_path(const char *in_path, char *out, size_t out_size) {
     const char *slash = strrchr(in_path, '/');
     size_t dir_len = slash ? (size_t) (slash - in_path) + 1 : 0;
     const char *dot = strrchr(in_path + dir_len, '.');
     size_t stem_len = dot ? (size_t) (dot - in_path) - dir_len
                           : strlen(in_path) - dir_len;
-    int n = snprintf(out, out_size, "%.*s%.*s_copy%s",
+    int n = snprintf(out, out_size, "%.*s%.*s_stretched%s",
                      (int) dir_len, in_path,
                      (int) stem_len, in_path + dir_len,
                      dot ? dot : ".jpeg");
@@ -114,10 +135,12 @@ static uint8_t *read_file(const char *path, size_t *size_out) {
 }
 
 
-static int write_file(const char *out_path, uint8_t *out_jpeg, size_t out_jpeg_size) {
+static int write_file(const char *out_path, uint8_t *out_jpeg, size_t out_jpeg_size, img_t **frame_ptr) {
+    img_t *frame = *frame_ptr;
     int fd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         fprintf(stderr, "error: cannot open '%s' for writing: %s\n", out_path, strerror(errno));
+        clean(frame_ptr, NULL, out_jpeg);
         return -1;
     }
 
@@ -125,19 +148,26 @@ static int write_file(const char *out_path, uint8_t *out_jpeg, size_t out_jpeg_s
     while (total_written < out_jpeg_size) {
         ssize_t res = write(fd, out_jpeg + total_written, out_jpeg_size - total_written);
         if (res < 0) {
-            if (errno == EINTR)
+            if (errno == EINTR) {
                 continue;
+            }
             fprintf(stderr, "error: writing '%s': %s\n", out_path, strerror(errno));
             close(fd);
+            clean(frame_ptr, NULL, out_jpeg);
             return -1;
         }
-        total_written += (size_t)res;
+        total_written += (size_t) res;
     }
 
     if (close(fd) < 0) {
         fprintf(stderr, "error: closing '%s': %s\n", out_path, strerror(errno));
+        clean(frame_ptr, NULL, out_jpeg);
         return -1;
     }
+
+    fprintf(stderr, "wrote: %s (%dx%d, %zu bytes)\n",
+            out_path, frame->dst_w, frame->h, out_jpeg_size);
+    printf("%s\n", out_path);
 
     return 0;
 }
@@ -153,22 +183,38 @@ static int decode(img_t **frame_ptr, const char *in_path) {
     }
 
     if (tj3DecompressHeader(dec, frame->jpeg_buffer, frame->jpeg_size) != 0) {
-        fprintf(stderr, "error: '%s' is not a readable JPEG: %s\n", in_path, err_str(dec));
+        fprintf(stderr, "error: '%s' is not a readable JPEG: %s\n",
+                in_path, err_str(dec));
         clean(frame_ptr, &dec, NULL);
         return -1;
     }
 
     frame->w = tj3Get(dec, TJPARAM_JPEGWIDTH);
     frame->h = tj3Get(dec, TJPARAM_JPEGHEIGHT);
+    int subsample = tj3Get(dec, TJPARAM_SUBSAMP);
 
-    frame->rgb = tj3Alloc((size_t)frame->w * frame->h * 3);
-    if (!frame->rgb) {
+    double aspect = (double) frame->w / (double) frame->h;
+    fprintf(stderr, "decoded: %dx%d (%.4f:1), subsamp=%d\n", frame->w, frame->h, aspect, subsample);
+
+    frame->dst_w = (int) lround((double) frame->w * LAMBDA);
+    if (frame->dst_w < 1 || (size_t) frame->dst_w > INT_MAX / ((size_t) frame->h * 3)) {
+        fprintf(stderr, "error: degenerate output size for %dx%d\n", frame->w, frame->h);
+        clean(frame_ptr, &dec, NULL);
+        return -1;
+    }
+    fprintf(stderr, "resampling: %.4f:1 -> %.4f:1 (%dx%d -> %dx%d, x%.3f)\n",
+            aspect, TARGET_ASPECT, frame->w, frame->h, frame->dst_w, frame->h,
+            (double) frame->dst_w / (double) frame->w);
+
+    frame->rgb_src = tj3Alloc((size_t) frame->w * frame->h * 3);
+    frame->rgb_dst = tj3Alloc((size_t) frame->dst_w * frame->h * 3);
+    if (!frame->rgb_src || !frame->rgb_dst) {
         fprintf(stderr, "error: tj3Alloc\n");
         clean(frame_ptr, &dec, NULL);
         return -1;
     }
 
-    if (tj3Decompress8(dec, frame->jpeg_buffer, frame->jpeg_size, frame->rgb, frame->w * 3, TJPF_RGB) != 0) {
+    if (tj3Decompress8(dec, frame->jpeg_buffer, frame->jpeg_size, frame->rgb_src, frame->w * 3, TJPF_RGB) != 0) {
         fprintf(stderr, "error: decode: %s\n", err_str(dec));
         clean(frame_ptr, &dec, NULL);
         return -1;
@@ -187,7 +233,6 @@ static int encode(img_t **frame_ptr, uint8_t **out_jpeg, size_t *out_jpeg_size) 
         clean(frame_ptr, &enc, NULL);
         return -1;
     }
-
     if (tj3Set(enc, TJPARAM_QUALITY, JPEG_QUALITY) != 0 ||
         tj3Set(enc, TJPARAM_SUBSAMP, TJSAMP_420) != 0) {
         fprintf(stderr, "error: setting encoder params: %s\n", err_str(enc));
@@ -195,7 +240,7 @@ static int encode(img_t **frame_ptr, uint8_t **out_jpeg, size_t *out_jpeg_size) 
         return -1;
     }
 
-    if (tj3Compress8(enc, frame->rgb, frame->w, frame->w * 3, frame->h, TJPF_RGB,
+    if (tj3Compress8(enc, frame->rgb_dst, frame->dst_w, frame->dst_w * 3, frame->h, TJPF_RGB,
                      out_jpeg, out_jpeg_size) != 0) {
         fprintf(stderr, "error: encode: %s\n", err_str(enc));
         clean(frame_ptr, &enc, *out_jpeg);
@@ -209,7 +254,7 @@ static int encode(img_t **frame_ptr, uint8_t **out_jpeg, size_t *out_jpeg_size) 
 
 int main(int argc, char **argv) {
     if (argc != 2) {
-        fprintf(stderr, "usage: %s <filename.jpeg>\n", argv[0]);
+        fprintf(stderr, "usage: ./turbostretch <filename.jpeg>\n");
         return EXIT_FAILURE;
     }
 
@@ -236,9 +281,13 @@ int main(int argc, char **argv) {
 
     frame->jpeg_size = jpeg_size;
     frame->jpeg_buffer = jpeg_buffer;
-    frame->rgb = NULL;
+    frame->rgb_src = NULL;
+    frame->rgb_dst = NULL;
     if (decode(&frame, in_path))
         return EXIT_FAILURE;
+
+    /* ----- Stretch ----- */
+    resample(frame->rgb_src, frame->rgb_dst, frame->w, frame->dst_w, frame->h);
 
     /* ----- Encode ----- */
     uint8_t *out_jpeg = NULL;
@@ -246,14 +295,9 @@ int main(int argc, char **argv) {
     if (encode(&frame, &out_jpeg, &out_jpeg_size))
         return EXIT_FAILURE;
 
-    /* ----- Write to new file ----- */
-    if (write_file(out_path, out_jpeg, out_jpeg_size)) {
-        clean(&frame, NULL, out_jpeg);
+    /* ----- Write transformed image to file ----- */
+    if (write_file(out_path, out_jpeg, out_jpeg_size, &frame))
         return EXIT_FAILURE;
-    }
-
-    fprintf(stderr, "wrote: %s (%dx%d, %zu bytes)\n", out_path, frame->w, frame->h, out_jpeg_size);
-    printf("%s\n", out_path);
 
     clean(&frame, NULL, out_jpeg);
     return EXIT_SUCCESS;
