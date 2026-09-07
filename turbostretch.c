@@ -55,8 +55,8 @@ static const char *err_str(tjhandle h) {
 /* Nearest-neighbor horizontal resample (src_w x h) -> (dst_w x h) */
 static void resample(const uint8_t *src, uint8_t *dst, int src_w, int dst_w, int h) {
     for (int y = 0; y < h; ++y) {
-        const uint8_t *s_row = src + (size_t) y * src_w * 3;
-        uint8_t *d_row = dst + (size_t) y * dst_w * 3;
+        const uint8_t *s_row = src + (size_t) y * (size_t) src_w * 3;
+        uint8_t *d_row = dst + (size_t) y * (size_t) dst_w * 3;
         for (int x = 0; x < dst_w; ++x) {
             int sx = (int) (((double) x + 0.5) * (double) src_w / (double) dst_w);
             if (sx >= src_w)
@@ -206,8 +206,8 @@ static int decode(img_t **frame_ptr, const char *in_path) {
             aspect, TARGET_ASPECT, frame->w, frame->h, frame->dst_w, frame->h,
             (double) frame->dst_w / (double) frame->w);
 
-    frame->rgb_src = tj3Alloc((size_t) frame->w * frame->h * 3);
-    frame->rgb_dst = tj3Alloc((size_t) frame->dst_w * frame->h * 3);
+    frame->rgb_src = tj3Alloc((size_t) frame->w * (size_t) frame->h * 3);
+    frame->rgb_dst = tj3Alloc((size_t) frame->dst_w * (size_t) frame->h * 3);
     if (!frame->rgb_src || !frame->rgb_dst) {
         fprintf(stderr, "error: tj3Alloc\n");
         clean(frame_ptr, &dec, NULL);
