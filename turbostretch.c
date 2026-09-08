@@ -44,16 +44,28 @@ static const char* err_str(tjhandle h) {
 }
 
 /* Nearest-neighbor horizontal resample (src_w x h) -> (dst_w x h) */
-static void resample(const uint8_t* src, uint8_t* dst, int src_w, int dst_w, int h) {
+static int resample(const uint8_t* src, uint8_t* dst, int src_w, int dst_w, int h) {
+    int* x_map = malloc((size_t)dst_w * sizeof(*x_map));
+    if (!x_map) {
+        fprintf(stderr, "error: x_map malloc\n");
+        return -1;
+    }
+
+    const double ratio = (double)src_w / (double)dst_w;
+    for (int x = 0; x < dst_w; ++x) {
+        int sx = (int)(((double)x + 0.5) * ratio);
+        x_map[x] = (sx >= src_w ? src_w - 1 : sx) * 3;
+    }
+
     for (int y = 0; y < h; ++y) {
         const uint8_t* s_row = src + (size_t)y * (size_t)src_w * 3;
         uint8_t* d_row = dst + (size_t)y * (size_t)dst_w * 3;
-        for (int x = 0; x < dst_w; ++x) {
-            int sx = (int)(((double)x + 0.5) * (double)src_w / (double)dst_w);
-            if (sx >= src_w) sx = src_w - 1;
-            memcpy(d_row + (size_t)x * 3, s_row + (size_t)sx * 3, 3);
-        }
+        for (int x = 0; x < dst_w; ++x)
+            memcpy(d_row + (size_t)x * 3, s_row + x_map[x], 3);
     }
+
+    free(x_map);
+    return 0;
 }
 
 static int build_output_path(const char* in_path, char* out, size_t out_size) {
@@ -264,7 +276,10 @@ int main(int argc, char** argv) {
     if (decode(&frame, in_path)) return EXIT_FAILURE;
 
     /* ----- Stretch ----- */
-    resample(frame->rgb_src, frame->rgb_dst, frame->w, frame->dst_w, frame->h);
+    if (resample(frame->rgb_src, frame->rgb_dst, frame->w, frame->dst_w, frame->h)) {
+        clean(&frame, NULL, NULL);
+        return EXIT_FAILURE;
+    }
 
     /* ----- Encode ----- */
     uint8_t* out_jpeg = NULL;
