@@ -60,8 +60,7 @@ static int resample(const uint8_t* src, uint8_t* dst, int src_w, int dst_w, int 
     for (int y = 0; y < h; ++y) {
         const uint8_t* s_row = src + (size_t)y * (size_t)src_w * 3;
         uint8_t* d_row = dst + (size_t)y * (size_t)dst_w * 3;
-        for (int x = 0; x < dst_w; ++x)
-            memcpy(d_row + (size_t)x * 3, s_row + x_map[x], 3);
+        for (int x = 0; x < dst_w; ++x) memcpy(d_row + (size_t)x * 3, s_row + x_map[x], 3);
     }
 
     free(x_map);
