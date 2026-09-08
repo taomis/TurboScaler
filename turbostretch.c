@@ -45,20 +45,25 @@ static const char* err_str(tjhandle h) {
 
 /* Nearest-neighbor horizontal resample (src_w x h) -> (dst_w x h) */
 static int resample(const uint8_t* src, uint8_t* dst, int src_w, int dst_w, int h) {
-    int* x_map = malloc((size_t)dst_w * sizeof(*x_map));
+    // dst RGB buffer <- src RGB buffer x-coordinate map
+    int* x_map = calloc((size_t)dst_w, sizeof(*x_map));
     if (!x_map) {
-        fprintf(stderr, "error: x_map malloc\n");
+        fprintf(stderr, "error: resample x_map alloc\n");
         return -1;
     }
 
     const double ratio = (double)src_w / (double)dst_w;
     for (int x = 0; x < dst_w; ++x) {
+        // map dst pixel center to src coordinate space
         int sx = (int)(((double)x + 0.5) * ratio);
+        // src boundaries, convert to byte offset
         x_map[x] = (sx >= src_w ? src_w - 1 : sx) * 3;
     }
 
     for (int y = 0; y < h; ++y) {
+        // calcualte y-th row offset address
         const uint8_t* s_row = src + (size_t)y * (size_t)src_w * 3;
+        // calculate corresponding dst address
         uint8_t* d_row = dst + (size_t)y * (size_t)dst_w * 3;
         for (int x = 0; x < dst_w; ++x) memcpy(d_row + (size_t)x * 3, s_row + x_map[x], 3);
     }
