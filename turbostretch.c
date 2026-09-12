@@ -43,32 +43,46 @@ static const char* err_str(tjhandle h) {
     return s ? s : "unknown error";
 }
 
-/* Nearest-neighbor horizontal resample (src_w x h) -> (dst_w x h) */
+/* Linear interpolation horizontal resample (src_w x h) -> (dst_w x h) */
 static int resample(const uint8_t* src, uint8_t* dst, int src_w, int dst_w, int h) {
-    // dst RGB buffer <- src RGB buffer x-coordinate map
-    int* x_map = calloc((size_t)dst_w, sizeof(*x_map));
-    if (!x_map) {
-        fprintf(stderr, "error: resample x_map alloc\n");
-        return -1;
-    }
-
     const double ratio = (double)src_w / (double)dst_w;
-    for (int x = 0; x < dst_w; ++x) {
-        // map dst pixel center to src coordinate space
-        int sx = (int)(((double)x + 0.5) * ratio);
-        // src boundaries, convert to byte offset
-        x_map[x] = (sx >= src_w ? src_w - 1 : sx) * 3;
-    }
-
     for (int y = 0; y < h; ++y) {
-        // calcualte y-th row offset address
+        // calculate y-th row offset address
         const uint8_t* s_row = src + (size_t)y * (size_t)src_w * 3;
         // calculate corresponding dst address
         uint8_t* d_row = dst + (size_t)y * (size_t)dst_w * 3;
-        for (int x = 0; x < dst_w; ++x) memcpy(d_row + (size_t)x * 3, s_row + x_map[x], 3);
+
+        for (int x = 0; x < dst_w; ++x) {
+            // map dst pixel center to src coordinate space
+            double sx = (((double)x + 0.5) * ratio) - 0.5;
+            // compute base index and sub-pixel weight
+            int x_floor = (int)floor(sx);
+            double weight = sx - (double)x_floor;
+
+            // zero weight when out of bounds
+            if (sx < 0.0 || sx >= src_w - 1) weight = 0.0;
+
+            // [0, src_w - 1] <- x_floor
+            if (x_floor < 0) x_floor = 0;
+            if (x_floor >= src_w) x_floor = src_w - 1;
+
+            // left index (sampled)
+            int x_low = x_floor;
+            // right index, [x_low, src_w - 1] <- x_high
+            int x_high = (x_floor + 1 < src_w) ? x_floor + 1 : x_floor;
+
+            // sample pixels
+            const uint8_t* p0 = &s_row[x_low * 3];
+            const uint8_t* p1 = &s_row[x_high * 3];
+
+            // linearly interpolate each RGB channel and round to the nearest byte
+            for (int ch = 0; ch < 3; ++ch) {
+                double ch_val = p0[ch] + weight * (p1[ch] - p0[ch]);
+                d_row[x * 3 + ch] = (uint8_t)lround(ch_val);
+            }
+        }
     }
 
-    free(x_map);
     return 0;
 }
 
