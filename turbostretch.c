@@ -59,17 +59,10 @@ static int resample(const uint8_t* src, uint8_t* dst, int src_w, int dst_w, int 
             int x_floor = (int)floor(sx);
             double weight = sx - (double)x_floor;
 
-            // zero weight when out of bounds
-            if (sx < 0.0 || sx >= src_w - 1) weight = 0.0;
-
-            // [0, src_w - 1] <- x_floor
-            if (x_floor < 0) x_floor = 0;
-            if (x_floor >= src_w) x_floor = src_w - 1;
-
             // left index (sampled)
-            int x_low = x_floor;
+            int x_low = (x_floor < 0) ? 0 : ((x_floor >= src_w) ? src_w - 1 : x_floor);
             // right index, [x_low, src_w - 1] <- x_high
-            int x_high = (x_floor + 1 < src_w) ? x_floor + 1 : x_floor;
+            int x_high = (x_floor + 1 < 0) ? 0 : ((x_floor + 1 >= src_w) ? src_w - 1 : x_floor + 1);
 
             // sample pixels
             const uint8_t* p0 = &s_row[x_low * 3];
