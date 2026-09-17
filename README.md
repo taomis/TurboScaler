@@ -4,7 +4,7 @@
 
 ![native cs_ak](assets/cs_ak.jpeg)
 
-**4:3 -> 16:9 Stretch**
+**16:9 -> 4:3 Squash**
 
 ![stretched cs_ak](assets/cs_ak_stretched.jpeg)
 
